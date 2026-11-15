@@ -345,7 +345,8 @@ class TestNikaMeteredEmbedding:
             "workspace_id": "workspace-id",
             "operation_id": "operation-id",
             "signature": hmac.new(
-                secret.encode(), b"workspace-id|operation-id|source:metered",
+                secret.encode(),
+                b"workspace-id|operation-id|source:metered",
                 hashlib.sha256,
             ).hexdigest(),
         }
@@ -358,19 +359,30 @@ class TestNikaMeteredEmbedding:
             return {"accepted": True}
 
         model = MagicMock()
-        model.aembed = AsyncMock(return_value=[[0.1, 0.2]])
+        model.aembed = AsyncMock()
+        direct_embed = AsyncMock(return_value=([[0.1, 0.2]], "gen-emb-test", 2))
         with (
-            patch("open_notebook.ai.models.model_manager.get_embedding_model",
-                  new_callable=AsyncMock, return_value=model),
+            patch(
+                "open_notebook.ai.models.model_manager.get_embedding_model",
+                new_callable=AsyncMock,
+                return_value=model,
+            ),
             patch("open_notebook.utils.nika_metering.report", side_effect=checkpoint),
+            patch(
+                "open_notebook.utils.nika_openrouter_embedding.embed_metered_batch",
+                direct_embed,
+            ),
         ):
             result = await generate_embeddings(
-                ["text"], command_id="command-id", nika_metering=context,
+                ["text"],
+                command_id="command-id",
+                nika_metering=context,
                 nika_source_id=source_id,
             )
         assert result == [[0.1, 0.2]]
-        assert events == ["plan", "batches", "dispatch", "unknown"]
-        model.aembed.assert_awaited_once_with(["text"])
+        assert events == ["plan", "batches", "dispatch", "response"]
+        direct_embed.assert_awaited_once_with(["text"], batch_id="batch-id")
+        model.aembed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_repeated_dispatch_never_calls_provider(self, monkeypatch):
@@ -384,7 +396,8 @@ class TestNikaMeteredEmbedding:
             "workspace_id": "workspace-id",
             "operation_id": "operation-id",
             "signature": hmac.new(
-                secret.encode(), b"workspace-id|operation-id|source:metered",
+                secret.encode(),
+                b"workspace-id|operation-id|source:metered",
                 hashlib.sha256,
             ).hexdigest(),
         }
@@ -397,18 +410,29 @@ class TestNikaMeteredEmbedding:
             return {"accepted": True}
 
         model = MagicMock()
-        model.aembed = AsyncMock(return_value=[[0.1, 0.2]])
+        model.aembed = AsyncMock()
+        direct_embed = AsyncMock()
         with (
-            patch("open_notebook.ai.models.model_manager.get_embedding_model",
-                  new_callable=AsyncMock, return_value=model),
+            patch(
+                "open_notebook.ai.models.model_manager.get_embedding_model",
+                new_callable=AsyncMock,
+                return_value=model,
+            ),
             patch("open_notebook.utils.nika_metering.report", side_effect=checkpoint),
+            patch(
+                "open_notebook.utils.nika_openrouter_embedding.embed_metered_batch",
+                direct_embed,
+            ),
         ):
             with pytest.raises(ValueError, match="Already dispatched"):
                 await generate_embeddings(
-                    ["text"], command_id="command-id", nika_metering=context,
+                    ["text"],
+                    command_id="command-id",
+                    nika_metering=context,
                     nika_source_id="source:metered",
                 )
         model.aembed.assert_not_awaited()
+        direct_embed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ambiguous_provider_failure_is_not_retried(self, monkeypatch):
@@ -422,7 +446,8 @@ class TestNikaMeteredEmbedding:
             "workspace_id": "workspace-id",
             "operation_id": "operation-id",
             "signature": hmac.new(
-                secret.encode(), b"workspace-id|operation-id|source:metered",
+                secret.encode(),
+                b"workspace-id|operation-id|source:metered",
                 hashlib.sha256,
             ).hexdigest(),
         }
@@ -430,24 +455,37 @@ class TestNikaMeteredEmbedding:
 
         async def checkpoint(path, payload):
             events.append(path.rsplit("/", 1)[-1])
-            return {"batch_id": "batch-id"} if path.endswith("/batches") else {
-                "accepted": True
-            }
+            return (
+                {"batch_id": "batch-id"}
+                if path.endswith("/batches")
+                else {"accepted": True}
+            )
 
         model = MagicMock()
-        model.aembed = AsyncMock(side_effect=RuntimeError("provider timeout"))
+        model.aembed = AsyncMock()
+        direct_embed = AsyncMock(side_effect=RuntimeError("provider timeout"))
         with (
-            patch("open_notebook.ai.models.model_manager.get_embedding_model",
-                  new_callable=AsyncMock, return_value=model),
+            patch(
+                "open_notebook.ai.models.model_manager.get_embedding_model",
+                new_callable=AsyncMock,
+                return_value=model,
+            ),
             patch("open_notebook.utils.nika_metering.report", side_effect=checkpoint),
+            patch(
+                "open_notebook.utils.nika_openrouter_embedding.embed_metered_batch",
+                direct_embed,
+            ),
         ):
             with pytest.raises(ValueError, match="requires reconciliation"):
                 await generate_embeddings(
-                    ["text"], command_id="command-id", nika_metering=context,
+                    ["text"],
+                    command_id="command-id",
+                    nika_metering=context,
                     nika_source_id="source:metered",
                 )
         assert events == ["plan", "batches", "dispatch", "unknown"]
-        model.aembed.assert_awaited_once()
+        direct_embed.assert_awaited_once()
+        model.aembed.assert_not_awaited()
 
 
 # ============================================================================

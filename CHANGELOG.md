@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Nika fork only: optional provider response ID candidate and reported token counts on chat messages, with an update-compatibility checklist. This is billing evidence, not a verified cost or complete metering for embeddings.
+- Nika fork only: signed embedding jobs can use a single-call OpenRouter path that preserves the response ID and token usage for independent Nika-side cost reconciliation. Ordinary Open Notebook embedding jobs are unchanged.
 
 ## [1.15.1] - 2026-11-03
 
