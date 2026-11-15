@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Nika fork only: optional provider response ID candidate and reported token counts on chat messages, with an update-compatibility checklist. This is billing evidence, not a verified cost or complete metering for embeddings.
+
 ## [1.15.1] - 2026-11-03
 
 ### Changed

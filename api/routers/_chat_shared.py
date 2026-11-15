@@ -27,6 +27,18 @@ class ChatMessage(BaseModel):
     type: str = Field(..., description="Message type (human|ai)")
     content: str = Field(..., description="Message content")
     timestamp: Optional[str] = Field(None, description="Message timestamp")
+    # Optional evidence for external billing reconciliation. Never infer money
+    # from these token counts: provider pricing can include other charges.
+    provider_response_id: Optional[str] = Field(
+        None,
+        description="Provider response candidate; verify with the provider before billing",
+        exclude_if=lambda value: value is None,
+    )
+    usage: Optional[dict[str, int]] = Field(
+        None,
+        description="Provider-reported token counts when available",
+        exclude_if=lambda value: value is None,
+    )
 
 
 class SuccessResponse(BaseModel):
@@ -83,12 +95,35 @@ def extract_chat_messages(raw_messages: Iterable[Any]) -> List[ChatMessage]:
     """Convert LangGraph/LangChain state messages into `ChatMessage` models."""
     messages: List[ChatMessage] = []
     for msg in raw_messages:
+        is_ai = getattr(msg, "type", None) == "ai"
+        raw_id = getattr(msg, "id", None)
+        provider_id = (
+            raw_id
+            if is_ai
+            and isinstance(raw_id, str)
+            and len(raw_id) <= 200
+            and raw_id.startswith(("gen-", "chatcmpl-"))
+            else None
+        )
+        raw_usage = getattr(msg, "usage_metadata", None)
+        usage = None
+        if is_ai and isinstance(raw_usage, dict):
+            counts = {
+                name: raw_usage[name]
+                for name in ("input_tokens", "output_tokens", "total_tokens")
+                if isinstance(raw_usage.get(name), int)
+                and not isinstance(raw_usage[name], bool)
+                and raw_usage[name] >= 0
+            }
+            usage = counts or None
         messages.append(
             ChatMessage(
                 id=getattr(msg, "id", f"msg_{len(messages)}"),
                 type=msg.type if hasattr(msg, "type") else "unknown",
                 content=msg.content if hasattr(msg, "content") else str(msg),
                 timestamp=None,  # LangChain messages don't have timestamps by default
+                provider_response_id=provider_id,
+                usage=usage,
             )
         )
     return messages
