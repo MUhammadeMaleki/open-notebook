@@ -212,6 +212,7 @@ class EmbedSourceInput(CommandInput):
     """Input for embedding a source (creates multiple chunk embeddings)."""
 
     source_id: str
+    nika_metering: Optional[Dict[str, str]] = None
 
 
 class EmbedSourceOutput(CommandOutput):
@@ -342,12 +343,15 @@ async def embed_source_command(input_data: EmbedSourceInput) -> EmbedSourceOutpu
         if not source.full_text or not source.full_text.strip():
             raise ValueError(f"Source '{input_data.source_id}' has no text to embed")
 
-        # 2. DELETE existing embeddings (idempotency)
-        logger.debug(f"Deleting existing embeddings for source {input_data.source_id}")
-        await repo_query(
-            "DELETE source_embedding WHERE source = $source_id",
-            {"source_id": ensure_record_id(input_data.source_id)},
-        )
+        # Nika-controlled retries must pass the one-time dispatch checkpoint
+        # before replacing any existing vectors. Ordinary jobs retain upstream
+        # ordering for compatibility.
+        if input_data.nika_metering is None:
+            logger.debug(f"Deleting existing embeddings for source {input_data.source_id}")
+            await repo_query(
+                "DELETE source_embedding WHERE source = $source_id",
+                {"source_id": ensure_record_id(input_data.source_id)},
+            )
 
         # 3. Detect content type from file path if available
         file_path = source.asset.file_path if source.asset else None
@@ -373,13 +377,28 @@ async def embed_source_command(input_data: EmbedSourceInput) -> EmbedSourceOutpu
         # 5. Generate embeddings for all chunks in batches
         cmd_id = get_command_id(input_data)
         logger.debug(f"Generating embeddings for {total_chunks} chunks")
-        embeddings = await generate_embeddings(chunks, command_id=cmd_id)
+        if input_data.nika_metering is not None:
+            from open_notebook.utils.nika_metering import validate_context
+
+            validate_context(input_data.source_id, input_data.nika_metering)
+        embeddings = await generate_embeddings(
+            chunks, command_id=cmd_id,
+            **({"nika_metering": input_data.nika_metering,
+                "nika_source_id": input_data.source_id}
+               if input_data.nika_metering is not None else {}),
+        )
 
         # Verify we got embeddings for all chunks
         if len(embeddings) != len(chunks):
             raise ValueError(
                 f"Embedding count mismatch: got {len(embeddings)} embeddings "
                 f"for {len(chunks)} chunks"
+            )
+
+        if input_data.nika_metering is not None:
+            await repo_query(
+                "DELETE source_embedding WHERE source = $source_id",
+                {"source_id": ensure_record_id(input_data.source_id)},
             )
 
         # 6. Bulk INSERT source_embedding records

@@ -11,6 +11,8 @@ to ensure consistent behavior and proper handling of large content.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 from typing import List, Optional
 
@@ -104,7 +106,9 @@ async def mean_pool_embeddings(embeddings: List[List[float]]) -> List[float]:
 
 
 async def generate_embeddings(
-    texts: List[str], command_id: Optional[str] = None
+    texts: List[str], command_id: Optional[str] = None,
+    nika_metering: Optional[dict[str, str]] = None,
+    nika_source_id: Optional[str] = None,
 ) -> List[List[float]]:
     """
     Generate embeddings for multiple texts with automatic batching and retry.
@@ -166,10 +170,67 @@ async def generate_embeddings(
     all_embeddings: List[List[float]] = []
     total_batches = (len(texts) + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
 
+    if nika_metering is not None:
+        from open_notebook.utils.nika_metering import report, validate_context
+
+        if not nika_source_id or not command_id or command_id == "unknown":
+            raise ValueError("Nika metered embedding needs a source and command ID")
+        validate_context(nika_source_id, nika_metering)
+        await report("/internal/source-engine/embedding/plan", {
+            "workspace_id": nika_metering["workspace_id"],
+            "operation_id": nika_metering["operation_id"],
+            "engine_source_id": nika_source_id,
+            "engine_job_id": command_id,
+            "batch_count": total_batches,
+        })
+
     for batch_idx in range(total_batches):
         start = batch_idx * EMBEDDING_BATCH_SIZE
         end = start + EMBEDDING_BATCH_SIZE
         batch = texts[start:end]
+
+        if nika_metering is not None:
+            # Persist the dispatch checkpoint BEFORE the paid request. The
+            # generic Esperanto aembed API discards response ID and usage, so
+            # even a successful call remains unresolved for reconciliation.
+            digest = hashlib.sha256(json.dumps(
+                batch, ensure_ascii=False, separators=(",", ":"),
+            ).encode()).hexdigest()
+            result = await report("/internal/source-engine/embedding/batches", {
+                "workspace_id": nika_metering["workspace_id"],
+                "operation_id": nika_metering["operation_id"],
+                "batch_index": batch_idx,
+                "input_sha256": digest,
+            })
+            batch_id = result.get("batch_id")
+            if not isinstance(batch_id, str):
+                raise ValueError("Nika did not return an embedding batch ID")
+            await report("/internal/source-engine/embedding/batches/dispatch", {
+                "workspace_id": nika_metering["workspace_id"],
+                "batch_id": batch_id,
+            })
+            try:
+                batch_embeddings = await embedding_model.aembed(batch)
+            except Exception as exc:
+                try:
+                    await report("/internal/source-engine/embedding/batches/unknown", {
+                        "workspace_id": nika_metering["workspace_id"],
+                        "batch_id": batch_id,
+                    })
+                except Exception:
+                    pass  # The durable dispatched row still blocks a retry.
+                raise ValueError("Nika embedding outcome requires reconciliation") from exc
+            try:
+                await report("/internal/source-engine/embedding/batches/unknown", {
+                    "workspace_id": nika_metering["workspace_id"],
+                    "batch_id": batch_id,
+                })
+            except Exception as exc:
+                raise ValueError("Nika embedding checkpoint requires reconciliation") from exc
+            if len(batch_embeddings) != len(batch):
+                raise ValueError("Nika embedding count mismatch; review required")
+            all_embeddings.extend(batch_embeddings)
+            continue
 
         for attempt in range(1, EMBEDDING_MAX_RETRIES + 1):
             try:

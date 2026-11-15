@@ -247,6 +247,9 @@ class EmbedRequest(BaseModel):
     async_processing: bool = Field(
         False, description="Process asynchronously in background"
     )
+    nika_metering: Optional[Dict[str, str]] = Field(
+        None, description="Signed Nika operation context for controlled source jobs"
+    )
 
 
 class EmbedResponse(BaseModel):

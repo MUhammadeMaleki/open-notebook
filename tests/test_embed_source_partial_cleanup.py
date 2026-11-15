@@ -119,3 +119,24 @@ async def test_successful_insert_keeps_all_embeddings():
     assert len(rows) == 120
     assert not any(r.get("stale") for r in rows)
     assert len(table.rows_for(OTHER_SOURCE_ID)) == 1
+
+
+@pytest.mark.asyncio
+async def test_nika_duplicate_dispatch_keeps_existing_vectors():
+    table = _FakeEmbeddingTable(fail_on_batch=-1)
+    p1, p2, _p3, p4, p5 = _patches(table, n_chunks=1)
+    with (
+        p1, p2, p4, p5,
+        patch("open_notebook.utils.nika_metering.validate_context"),
+        patch("commands.embedding_commands.generate_embeddings",
+              new=AsyncMock(side_effect=ValueError("Already dispatched"))),
+    ):
+        result = await embed_source_command(EmbedSourceInput(
+            source_id=SOURCE_ID,
+            nika_metering={"workspace_id": "workspace", "operation_id": "operation",
+                           "signature": "signature"},
+        ))
+    assert result.success is False
+    assert table.rows_for(SOURCE_ID) == [
+        {"source": SOURCE_ID, "order": 0, "stale": True},
+    ]

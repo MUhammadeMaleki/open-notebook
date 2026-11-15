@@ -9,6 +9,7 @@ from open_notebook.exceptions import (
     NotFoundError,
     OpenNotebookError,
 )
+from open_notebook.utils.nika_metering import validate_context
 
 router = APIRouter()
 
@@ -33,6 +34,17 @@ async def embed_content(embed_request: EmbedRequest):
                 status_code=400, detail="Item type must be either 'source' or 'note'"
             )
 
+        if embed_request.nika_metering is not None:
+            if item_type != "source" or not embed_request.async_processing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Nika metering requires asynchronous source embedding",
+                )
+            try:
+                validate_context(item_id, embed_request.nika_metering)
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+
         # Branch based on processing mode
         if embed_request.async_processing:
             # ASYNC PATH: Submit command for background processing
@@ -46,6 +58,8 @@ async def embed_content(embed_request: EmbedRequest):
                 if item_type == "source":
                     command_name = "embed_source"
                     command_input = {"source_id": item_id}
+                    if embed_request.nika_metering is not None:
+                        command_input["nika_metering"] = embed_request.nika_metering
                 else:  # note
                     command_name = "embed_note"
                     command_input = {"note_id": item_id}

@@ -331,6 +331,125 @@ class TestGenerateEmbedding:
             assert mock_model.aembed.call_count == EMBEDDING_MAX_RETRIES
 
 
+class TestNikaMeteredEmbedding:
+    @pytest.mark.asyncio
+    async def test_dispatch_checkpoint_precedes_single_paid_call(self, monkeypatch):
+        import hashlib
+        import hmac
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        secret = "n" * 48
+        monkeypatch.setenv("NIKA_METERING_SHARED_SECRET", secret)
+        source_id = "source:metered"
+        context = {
+            "workspace_id": "workspace-id",
+            "operation_id": "operation-id",
+            "signature": hmac.new(
+                secret.encode(), b"workspace-id|operation-id|source:metered",
+                hashlib.sha256,
+            ).hexdigest(),
+        }
+        events = []
+
+        async def checkpoint(path, payload):
+            events.append(path.rsplit("/", 1)[-1])
+            if path.endswith("/batches"):
+                return {"batch_id": "batch-id"}
+            return {"accepted": True}
+
+        model = MagicMock()
+        model.aembed = AsyncMock(return_value=[[0.1, 0.2]])
+        with (
+            patch("open_notebook.ai.models.model_manager.get_embedding_model",
+                  new_callable=AsyncMock, return_value=model),
+            patch("open_notebook.utils.nika_metering.report", side_effect=checkpoint),
+        ):
+            result = await generate_embeddings(
+                ["text"], command_id="command-id", nika_metering=context,
+                nika_source_id=source_id,
+            )
+        assert result == [[0.1, 0.2]]
+        assert events == ["plan", "batches", "dispatch", "unknown"]
+        model.aembed.assert_awaited_once_with(["text"])
+
+    @pytest.mark.asyncio
+    async def test_repeated_dispatch_never_calls_provider(self, monkeypatch):
+        import hashlib
+        import hmac
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        secret = "n" * 48
+        monkeypatch.setenv("NIKA_METERING_SHARED_SECRET", secret)
+        context = {
+            "workspace_id": "workspace-id",
+            "operation_id": "operation-id",
+            "signature": hmac.new(
+                secret.encode(), b"workspace-id|operation-id|source:metered",
+                hashlib.sha256,
+            ).hexdigest(),
+        }
+
+        async def checkpoint(path, payload):
+            if path.endswith("/batches"):
+                return {"batch_id": "batch-id"}
+            if path.endswith("/dispatch"):
+                raise ValueError("Already dispatched")
+            return {"accepted": True}
+
+        model = MagicMock()
+        model.aembed = AsyncMock(return_value=[[0.1, 0.2]])
+        with (
+            patch("open_notebook.ai.models.model_manager.get_embedding_model",
+                  new_callable=AsyncMock, return_value=model),
+            patch("open_notebook.utils.nika_metering.report", side_effect=checkpoint),
+        ):
+            with pytest.raises(ValueError, match="Already dispatched"):
+                await generate_embeddings(
+                    ["text"], command_id="command-id", nika_metering=context,
+                    nika_source_id="source:metered",
+                )
+        model.aembed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_provider_failure_is_not_retried(self, monkeypatch):
+        import hashlib
+        import hmac
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        secret = "n" * 48
+        monkeypatch.setenv("NIKA_METERING_SHARED_SECRET", secret)
+        context = {
+            "workspace_id": "workspace-id",
+            "operation_id": "operation-id",
+            "signature": hmac.new(
+                secret.encode(), b"workspace-id|operation-id|source:metered",
+                hashlib.sha256,
+            ).hexdigest(),
+        }
+        events = []
+
+        async def checkpoint(path, payload):
+            events.append(path.rsplit("/", 1)[-1])
+            return {"batch_id": "batch-id"} if path.endswith("/batches") else {
+                "accepted": True
+            }
+
+        model = MagicMock()
+        model.aembed = AsyncMock(side_effect=RuntimeError("provider timeout"))
+        with (
+            patch("open_notebook.ai.models.model_manager.get_embedding_model",
+                  new_callable=AsyncMock, return_value=model),
+            patch("open_notebook.utils.nika_metering.report", side_effect=checkpoint),
+        ):
+            with pytest.raises(ValueError, match="requires reconciliation"):
+                await generate_embeddings(
+                    ["text"], command_id="command-id", nika_metering=context,
+                    nika_source_id="source:metered",
+                )
+        assert events == ["plan", "batches", "dispatch", "unknown"]
+        model.aembed.assert_awaited_once()
+
+
 # ============================================================================
 # TEST SUITE 4: Error Classification for 413
 # ============================================================================
