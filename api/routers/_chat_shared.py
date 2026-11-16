@@ -12,6 +12,7 @@ Behavior notes:
   them to the same status codes and messages as before.
 """
 
+import re
 from typing import Any, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -97,14 +98,19 @@ def extract_chat_messages(raw_messages: Iterable[Any]) -> List[ChatMessage]:
     for msg in raw_messages:
         is_ai = getattr(msg, "type", None) == "ai"
         raw_id = getattr(msg, "id", None)
-        provider_id = (
-            raw_id
-            if is_ai
-            and isinstance(raw_id, str)
-            and len(raw_id) <= 200
-            and raw_id.startswith(("gen-", "chatcmpl-"))
-            else None
-        )
+        metadata = getattr(msg, "response_metadata", None)
+        metadata_id = metadata.get("id") if isinstance(metadata, dict) else None
+        provider_id = None
+        if is_ai:
+            # LangChain normally sets msg.id to a local lc_run--... value.
+            # The actual OpenRouter gen-* ID lives in response_metadata.id.
+            for candidate in (metadata_id, raw_id):
+                if isinstance(candidate, str) and re.fullmatch(
+                    r"(?:gen-[A-Za-z0-9_-]{1,196}|chatcmpl-[A-Za-z0-9_-]{1,192})",
+                    candidate,
+                ):
+                    provider_id = candidate
+                    break
         raw_usage = getattr(msg, "usage_metadata", None)
         usage = None
         if is_ai and isinstance(raw_usage, dict):

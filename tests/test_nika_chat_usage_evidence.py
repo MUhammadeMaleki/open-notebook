@@ -49,3 +49,26 @@ def test_missing_or_untrusted_metadata_never_becomes_billing_evidence():
     assert messages[0].usage is None
     assert messages[1].provider_response_id == "chatcmpl-test-123"
     assert messages[1].usage is None
+
+
+def test_openrouter_response_metadata_survives_local_langchain_message_id():
+    messages = extract_chat_messages(
+        [
+            AIMessage(
+                content="Answer",
+                id="lc_run--local-id",
+                response_metadata={"id": "gen-provider-123"},
+                usage_metadata={
+                    "input_tokens": 8,
+                    "output_tokens": 3,
+                    "total_tokens": 11,
+                },
+            ),
+        ]
+    )
+    assert messages[0].provider_response_id == "gen-provider-123"
+    assert messages[0].usage == {
+        "input_tokens": 8,
+        "output_tokens": 3,
+        "total_tokens": 11,
+    }

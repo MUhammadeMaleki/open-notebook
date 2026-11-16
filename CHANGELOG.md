@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nika fork only: optional provider response ID candidate and reported token counts on chat messages, with an update-compatibility checklist. This is billing evidence, not a verified cost or complete metering for embeddings.
 - Nika fork only: signed embedding jobs can use a single-call OpenRouter path that preserves the response ID and token usage for independent Nika-side cost reconciliation. Ordinary Open Notebook embedding jobs are unchanged.
 
+### Fixed
+- Nika fork only: chat responses now read the provider ID from LangChain's response metadata when the message ID is a local `lc_run--...` value. This lets Nika verify the real OpenRouter cost without estimating it from token counts.
+
 ## [1.15.1] - 2026-11-03
 
 ### Changed
